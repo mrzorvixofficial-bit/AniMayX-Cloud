@@ -1,0 +1,6 @@
+{
+  "name": "AniMayX Cloud",
+  "description": "AniMayX Cloud — High-performance private VPS cloud storage and raw file server with direct embedding, range requests, and admin dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=Private VPS Cloud Storage Backend Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/cloud-storage
+ExecStart=/usr/bin/node dist/server.cjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloud-storage
+
+[Install]
+WantedBy=multi-user.target

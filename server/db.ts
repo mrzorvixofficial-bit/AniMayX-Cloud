@@ -1,0 +1,262 @@
+import { DatabaseSync } from 'node:sqlite';
+import { config, initDirectories } from './config.ts';
+
+initDirectories();
+
+export interface DbFile {
+  id: string;
+  original_name: string;
+  sanitized_name: string;
+  file_path: string;
+  mime_type: string;
+  size: number;
+  created_at: number;
+  updated_at: number;
+  download_count: number;
+  folder_path?: string | null;
+  storage_backend?: 'local' | 'mega';
+  mega_file_id?: string | null;
+  mega_share_link?: string | null;
+  upload_status?: string | null;
+}
+
+let dbInstance: DatabaseSync | null = null;
+
+export function getDb(): DatabaseSync {
+  if (!dbInstance) {
+    dbInstance = new DatabaseSync(config.databasePath);
+    dbInstance.exec('PRAGMA journal_mode = WAL;');
+    dbInstance.exec('PRAGMA synchronous = NORMAL;');
+    initSchema(dbInstance);
+  }
+  return dbInstance;
+}
+
+function initSchema(db: DatabaseSync) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS files (
+      id TEXT PRIMARY KEY,
+      original_name TEXT NOT NULL,
+      sanitized_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      download_count INTEGER DEFAULT 0
+    );
+  `);
+
+  // Safely alter table to add columns if they don't exist
+  try {
+    db.exec(`ALTER TABLE files ADD COLUMN folder_path TEXT;`);
+  } catch (err) {}
+  try {
+    db.exec(`ALTER TABLE files ADD COLUMN storage_backend TEXT DEFAULT 'local';`);
+  } catch (err) {}
+  try {
+    db.exec(`ALTER TABLE files ADD COLUMN mega_file_id TEXT;`);
+  } catch (err) {}
+  try {
+    db.exec(`ALTER TABLE files ADD COLUMN mega_share_link TEXT;`);
+  } catch (err) {}
+  try {
+    db.exec(`ALTER TABLE files ADD COLUMN upload_status TEXT DEFAULT 'completed';`);
+  } catch (err) {}
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_files_mime ON files(mime_type);
+    CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_path);
+
+    CREATE TABLE IF NOT EXISTS admin_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+}
+
+export const dbService = {
+  insertFile(file: DbFile): void {
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO files (id, original_name, sanitized_name, file_path, mime_type, size, created_at, updated_at, download_count, folder_path, storage_backend, mega_file_id, mega_share_link, upload_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      file.id,
+      file.original_name,
+      file.sanitized_name,
+      file.file_path,
+      file.mime_type,
+      file.size,
+      file.created_at,
+      file.updated_at,
+      file.download_count || 0,
+      file.folder_path || null,
+      file.storage_backend || 'local',
+      file.mega_file_id || null,
+      file.mega_share_link || null,
+      file.upload_status || 'completed'
+    );
+  },
+
+  getFileById(id: string): DbFile | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM files WHERE id = ?');
+    const result = stmt.get(id) as unknown as DbFile | undefined;
+    return result || null;
+  },
+
+  getAllFiles(search?: string, category?: string, sort: string = 'date_desc'): DbFile[] {
+    const db = getDb();
+    let query = 'SELECT * FROM files WHERE 1=1';
+    const params: (string | number)[] = [];
+
+    if (search && search.trim().length > 0) {
+      query += ' AND (original_name LIKE ? OR sanitized_name LIKE ?)';
+      const term = `%${search.trim()}%`;
+      params.push(term, term);
+    }
+
+    if (category && category !== 'all') {
+      if (category === 'image') {
+        query += " AND mime_type LIKE 'image/%'";
+      } else if (category === 'video') {
+        query += " AND (mime_type LIKE 'video/%' OR mime_type = 'application/x-matroska')";
+      } else if (category === 'audio') {
+        query += " AND mime_type LIKE 'audio/%'";
+      } else if (category === 'document') {
+        query += " AND (mime_type LIKE '%pdf%' OR mime_type LIKE '%text%' OR mime_type LIKE '%word%' OR mime_type LIKE '%document%' OR mime_type LIKE '%sheet%' OR mime_type LIKE '%presentation%')";
+      } else if (category === 'archive') {
+        query += " AND (mime_type LIKE '%zip%' OR mime_type LIKE '%tar%' OR mime_type LIKE '%rar%' OR mime_type LIKE '%7z%' OR mime_type LIKE '%compressed%')";
+      } else if (category === 'other') {
+        query += " AND mime_type NOT LIKE 'image/%' AND mime_type NOT LIKE 'video/%' AND mime_type NOT LIKE 'audio/%' AND mime_type NOT LIKE '%pdf%' AND mime_type NOT LIKE '%text%' AND mime_type NOT LIKE '%zip%'";
+      }
+    }
+
+    switch (sort) {
+      case 'date_asc':
+        query += ' ORDER BY created_at ASC';
+        break;
+      case 'size_desc':
+        query += ' ORDER BY size DESC';
+        break;
+      case 'size_asc':
+        query += ' ORDER BY size ASC';
+        break;
+      case 'name_asc':
+        query += ' ORDER BY original_name COLLATE NOCASE ASC';
+        break;
+      case 'name_desc':
+        query += ' ORDER BY original_name COLLATE NOCASE DESC';
+        break;
+      case 'date_desc':
+      default:
+        query += ' ORDER BY created_at DESC';
+        break;
+    }
+
+    const stmt = db.prepare(query);
+    const results = stmt.all(...params) as unknown as DbFile[];
+    return results || [];
+  },
+
+  updateFileName(id: string, newOriginalName: string): boolean {
+    const db = getDb();
+    const stmt = db.prepare(`
+      UPDATE files 
+      SET original_name = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    const info = stmt.run(newOriginalName, Date.now(), id);
+    return (info as { changes?: number }).changes !== 0;
+  },
+
+  updateMegaShareLink(id: string, link: string): boolean {
+    const db = getDb();
+    const stmt = db.prepare(`
+      UPDATE files 
+      SET mega_share_link = ?, updated_at = ?
+      WHERE id = ?
+    `);
+    const info = stmt.run(link, Date.now(), id);
+    return (info as { changes?: number }).changes !== 0;
+  },
+
+  deleteFile(id: string): boolean {
+    const db = getDb();
+    const stmt = db.prepare('DELETE FROM files WHERE id = ?');
+    const info = stmt.run(id);
+    return (info as { changes?: number }).changes !== 0;
+  },
+
+  incrementDownload(id: string): void {
+    const db = getDb();
+    const stmt = db.prepare('UPDATE files SET download_count = download_count + 1 WHERE id = ?');
+    stmt.run(id);
+  },
+
+  getStats() {
+    const db = getDb();
+    const totalStmt = db.prepare('SELECT COUNT(*) as count, COALESCE(SUM(size), 0) as total_size FROM files');
+    const total = totalStmt.get() as unknown as { count: number; total_size: number };
+
+    const typeStmt = db.prepare('SELECT mime_type, size FROM files');
+    const allFiles = typeStmt.all() as unknown as { mime_type: string; size: number }[];
+
+    const byType = {
+      images: { count: 0, bytes: 0 },
+      videos: { count: 0, bytes: 0 },
+      audio: { count: 0, bytes: 0 },
+      documents: { count: 0, bytes: 0 },
+      archives: { count: 0, bytes: 0 },
+      others: { count: 0, bytes: 0 },
+    };
+
+    for (const f of allFiles) {
+      const mime = (f.mime_type || '').toLowerCase();
+      if (mime.startsWith('image/')) {
+        byType.images.count++;
+        byType.images.bytes += f.size;
+      } else if (mime.startsWith('video/') || mime === 'application/x-matroska') {
+        byType.videos.count++;
+        byType.videos.bytes += f.size;
+      } else if (mime.startsWith('audio/')) {
+        byType.audio.count++;
+        byType.audio.bytes += f.size;
+      } else if (mime.includes('pdf') || mime.includes('text') || mime.includes('document') || mime.includes('sheet')) {
+        byType.documents.count++;
+        byType.documents.bytes += f.size;
+      } else if (mime.includes('zip') || mime.includes('tar') || mime.includes('rar') || mime.includes('compressed')) {
+        byType.archives.count++;
+        byType.archives.bytes += f.size;
+      } else {
+        byType.others.count++;
+        byType.others.bytes += f.size;
+      }
+    }
+
+    return {
+      used_bytes: total.total_size || 0,
+      file_count: total.count || 0,
+      by_type: byType,
+    };
+  },
+
+  getSetting(key: string): string | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT value FROM admin_settings WHERE key = ?');
+    const row = stmt.get(key) as unknown as { value: string } | undefined;
+    return row ? row.value : null;
+  },
+
+  setSetting(key: string, value: string): void {
+    const db = getDb();
+    const stmt = db.prepare(`
+      INSERT INTO admin_settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
+    stmt.run(key, value);
+  },
+};

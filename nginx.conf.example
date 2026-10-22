@@ -1,0 +1,60 @@
+# /etc/nginx/sites-available/files.example.com
+# Nginx Reverse Proxy Configuration for VPS Cloud Storage Backend
+
+server {
+    listen 80;
+    server_name files.example.com;
+
+    # Allow large and chunked file uploads
+    client_max_body_size 0;
+
+    # Direct raw file serving: /f/:id
+    location /f/ {
+        proxy_pass http://127.0.0.1:3000/f/;
+        proxy_http_version 1.1;
+
+        # Forward byte range requests for smooth video streaming and seeking
+        proxy_set_header Range $http_range;
+        proxy_set_header If-Range $http_if_range;
+
+        # Cross-origin embedding headers so <img> and <video> work on any website
+        add_header Access-Control-Allow-Origin * always;
+        add_header Cross-Origin-Resource-Policy cross-origin always;
+        add_header Accept-Ranges bytes always;
+
+        # Disable buffering for instant video/audio playback
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Authenticated Management APIs (/api/*)
+    location /api/ {
+        proxy_pass http://127.0.0.1:3000/api/;
+        proxy_http_version 1.1;
+
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_connect_timeout 60s;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Root / Frontend fallback
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
