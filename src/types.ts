@@ -17,9 +17,11 @@ export interface StoredFile {
 
 export interface StorageStats {
   used_bytes: number;
+  disk_used_bytes?: number;
   total_bytes: number;
   free_bytes: number;
   file_count: number;
+  storage_path?: string;
   by_type: {
     images: { count: number; bytes: number };
     videos: { count: number; bytes: number };
@@ -27,6 +29,15 @@ export interface StorageStats {
     documents: { count: number; bytes: number };
     archives: { count: number; bytes: number };
     others: { count: number; bytes: number };
+  };
+  server_info?: {
+    storage_path?: string;
+    database_path?: string;
+    max_upload_size?: number;
+    public_base_url?: string;
+    custom_public_base_url?: string;
+    auto_detected_url?: string;
+    frontend_url?: string;
   };
 }
 

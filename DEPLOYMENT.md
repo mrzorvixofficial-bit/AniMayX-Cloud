@@ -20,8 +20,8 @@ https://files.example.com
         └── Public Direct Raw File Serving: GET /f/:id
                 │
                 ▼
-        /storage/uploads/ (Physical Files)
-        /storage/metadata/storage.db (SQLite Database)
+        /opt/AniMayX-Cloud/storage/uploads/ (Physical Files)
+        /opt/AniMayX-Cloud/storage/metadata/storage.db (SQLite Database)
 ```
 
 Public users access files directly via:
@@ -34,11 +34,11 @@ https://files.example.com/f/abc123?raw=1
 
 ---
 
-## 1. Prerequisites on Ubuntu VPS
+## 1. Prerequisites on Debian 13 / Ubuntu VPS
 
-Log in to your Ubuntu VPS via SSH:
+Log in to your VPS via SSH:
 ```bash
-ssh ubuntu@your-vps-ip
+ssh root@your-vps-ip
 ```
 
 Update packages and install required tools:
@@ -60,20 +60,20 @@ node -v # Should display v22.x or newer
 
 Create the persistent storage and metadata directories:
 ```bash
-sudo mkdir -p /storage/uploads
-sudo mkdir -p /storage/metadata
-sudo chown -R $USER:$USER /storage
-sudo chmod -R 775 /storage
+sudo mkdir -p /opt/AniMayX-Cloud/storage/uploads
+sudo mkdir -p /opt/AniMayX-Cloud/storage/metadata
+sudo chown -R $USER:$USER /opt/AniMayX-Cloud
+sudo chmod -R 775 /opt/AniMayX-Cloud/storage
 ```
 
 ---
 
 ## 3. Clone and Build the Application
 
-Clone or copy your project into `/home/ubuntu/cloud-storage`:
+Clone or copy your project into `/opt/AniMayX-Cloud`:
 ```bash
-mkdir -p ~/cloud-storage
-cd ~/cloud-storage
+mkdir -p /opt/AniMayX-Cloud
+cd /opt/AniMayX-Cloud
 
 # If copying files or pulling from Git:
 # git clone <your-repo> .
@@ -85,9 +85,9 @@ npm run build
 
 ## 4. Environment Variables (`.env`)
 
-Create `~/cloud-storage/.env`:
+Create `/opt/AniMayX-Cloud/.env`:
 ```bash
-nano ~/cloud-storage/.env
+nano /opt/AniMayX-Cloud/.env
 ```
 
 Paste the following configuration:
@@ -95,8 +95,8 @@ Paste the following configuration:
 PORT=3000
 
 # Physical storage and SQLite database on VPS
-STORAGE_PATH="/storage/uploads"
-DATABASE_PATH="/storage/metadata/storage.db"
+STORAGE_PATH="/opt/AniMayX-Cloud/storage/uploads"
+DATABASE_PATH="/opt/AniMayX-Cloud/storage/metadata/storage.db"
 
 # JWT Secret for signing admin sessions (min 32 characters)
 JWT_SECRET="replace-with-a-random-32-char-secret-string-here"
@@ -119,29 +119,29 @@ FRONTEND_URL="https://cloud.example.com,http://localhost:3000,https://localhost:
 # Public Base URL used for generated direct raw file URLs
 PUBLIC_BASE_URL="https://files.example.com"
 
-# Max upload limit (in bytes) - default 10GB
-MAX_UPLOAD_SIZE=10737418240
+# Max upload limit (in bytes) - default 100GB
+MAX_UPLOAD_SIZE=107374182400
 ```
 
 ---
 
 ## 5. Configure Systemd Service
 
-Create `/etc/systemd/system/vps-cloud-storage.service`:
+Create `/etc/systemd/system/animayx-cloud.service`:
 ```bash
-sudo nano /etc/systemd/system/vps-cloud-storage.service
+sudo nano /etc/systemd/system/animayx-cloud.service
 ```
 
 Paste:
 ```ini
 [Unit]
-Description=Private VPS Cloud Storage Backend Server
+Description=AniMayX Cloud VPS Storage Backend Server
 After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/cloud-storage
+User=root
+WorkingDirectory=/opt/AniMayX-Cloud
 ExecStart=/usr/bin/node dist/server.cjs
 Restart=always
 RestartSec=5
@@ -149,7 +149,7 @@ Environment=NODE_ENV=production
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=cloud-storage
+SyslogIdentifier=animayx-cloud
 
 [Install]
 WantedBy=multi-user.target
@@ -158,9 +158,9 @@ WantedBy=multi-user.target
 Enable and start the service:
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable vps-cloud-storage
-sudo systemctl start vps-cloud-storage
-sudo systemctl status vps-cloud-storage
+sudo systemctl enable animayx-cloud
+sudo systemctl start animayx-cloud
+sudo systemctl status animayx-cloud
 ```
 
 ---
@@ -308,5 +308,5 @@ cd ~/cloud-storage
 git pull
 npm install
 npm run build
-sudo systemctl restart vps-cloud-storage
+sudo systemctl restart animayx-cloud
 ```

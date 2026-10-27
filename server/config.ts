@@ -38,10 +38,72 @@ function parseMaxUploadSize(): number {
   return parsed;
 }
 
+/**
+ * Resolves the storage directory for uploaded files.
+ * Default: /opt/AniMayX-Cloud/storage/uploads on VPS, with environment override support.
+ */
+function resolveStoragePath(): string {
+  const envPath = process.env.STORAGE_PATH?.trim();
+  if (envPath && envPath !== './storage/uploads') {
+    return path.resolve(envPath);
+  }
+
+  const vpsDefault = '/opt/AniMayX-Cloud/storage/uploads';
+
+  // If running at /opt/AniMayX-Cloud or that path exists
+  if (fs.existsSync('/opt/AniMayX-Cloud') || process.cwd() === '/opt/AniMayX-Cloud') {
+    return vpsDefault;
+  }
+
+  // If /opt is accessible and writable on Linux VPS
+  try {
+    if (fs.existsSync('/opt') && process.platform === 'linux' && !fs.existsSync('/app/applet')) {
+      return vpsDefault;
+    }
+  } catch {}
+
+  // If vpsDefault exists or can be used
+  if (fs.existsSync(vpsDefault)) {
+    return vpsDefault;
+  }
+
+  // Fallback to local workspace if running in developer sandbox
+  return path.resolve(rootDir, 'storage/uploads');
+}
+
+/**
+ * Resolves the SQLite metadata database path.
+ * Default: /opt/AniMayX-Cloud/storage/metadata/storage.db on VPS, with environment override support.
+ */
+function resolveDatabasePath(): string {
+  const envPath = process.env.DATABASE_PATH?.trim();
+  if (envPath && envPath !== './storage/metadata/storage.db') {
+    return path.resolve(envPath);
+  }
+
+  const vpsDefault = '/opt/AniMayX-Cloud/storage/metadata/storage.db';
+
+  if (fs.existsSync('/opt/AniMayX-Cloud') || process.cwd() === '/opt/AniMayX-Cloud') {
+    return vpsDefault;
+  }
+
+  try {
+    if (fs.existsSync('/opt') && process.platform === 'linux' && !fs.existsSync('/app/applet')) {
+      return vpsDefault;
+    }
+  } catch {}
+
+  if (fs.existsSync(vpsDefault)) {
+    return vpsDefault;
+  }
+
+  return path.resolve(rootDir, 'storage/metadata/storage.db');
+}
+
 export const config = {
   port: parseInt(process.env.PORT || '3000', 10),
-  storagePath: path.resolve(rootDir, process.env.STORAGE_PATH || './storage/uploads'),
-  databasePath: path.resolve(rootDir, process.env.DATABASE_PATH || './storage/metadata/storage.db'),
+  storagePath: resolveStoragePath(),
+  databasePath: resolveDatabasePath(),
   jwtSecret: process.env.JWT_SECRET || 'private-cloud-storage-super-secret-jwt-key-998877',
   adminPasswordHash: process.env.ADMIN_PASSWORD_HASH || '',
   adminPassword: process.env.ADMIN_PASSWORD || 'Master',
@@ -68,7 +130,7 @@ export const config = {
   },
 };
 
-// Ensure required directories exist
+// Ensure required directories exist safely during startup
 export function initDirectories() {
   const uploadDir = config.storagePath;
   const dbDir = path.dirname(config.databasePath);

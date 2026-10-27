@@ -1,5 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
+import fs from 'fs';
+import path from 'path';
 import { config, initDirectories } from './config.ts';
+import { generateFileId, sanitizeFilename, resolveMimeType } from './storage.ts';
 
 initDirectories();
 
@@ -22,12 +25,72 @@ export interface DbFile {
 
 let dbInstance: DatabaseSync | null = null;
 
+/**
+ * Reconciles physical files in storage directory with SQLite database records.
+ * Ensures existing files on VPS storage are indexed, counted, and searchable.
+ */
+export function syncStorageRecordsWithDisk(db: DatabaseSync): void {
+  try {
+    const uploadDir = config.storagePath;
+    if (!fs.existsSync(uploadDir)) return;
+
+    const entries = fs.readdirSync(uploadDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      // Skip hidden files, system files, chunks directory, or temporary files
+      if (entry.name.startsWith('.') || entry.name.endsWith('.db') || entry.name.endsWith('.tmp')) continue;
+
+      const fullPath = path.join(uploadDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        if (!stat.isFile() || stat.size === 0) continue;
+
+        // Check if file is already in the database by file_path or sanitized_name
+        const stmt = db.prepare('SELECT id FROM files WHERE file_path = ? OR sanitized_name = ?');
+        const existing = stmt.get(entry.name, entry.name) as { id: string } | undefined;
+
+        if (!existing) {
+          // Check if filename has format <id>_<timestamp>.<ext>
+          const match = entry.name.match(/^([a-zA-Z0-9_-]{8})_\d+(\.[a-zA-Z0-9]+)$/);
+          const id = match ? match[1] : generateFileId(8);
+          const originalName = match ? entry.name.substring(9) : entry.name;
+          const mimeType = resolveMimeType(entry.name);
+
+          const insertStmt = db.prepare(`
+            INSERT INTO files (id, original_name, sanitized_name, file_path, mime_type, size, created_at, updated_at, download_count, storage_backend, upload_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `);
+          insertStmt.run(
+            id,
+            originalName,
+            sanitizeFilename(entry.name),
+            entry.name,
+            mimeType,
+            stat.size,
+            Math.floor(stat.birthtimeMs || stat.mtimeMs || Date.now()),
+            Math.floor(stat.mtimeMs || Date.now()),
+            0,
+            'local',
+            'completed'
+          );
+          console.log(`[Storage] Synced disk file to database: ${entry.name} (${stat.size} bytes, id=${id})`);
+        }
+      } catch (err) {
+        console.warn(`[Storage] Skipping file ${entry.name}:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn('[Storage] Sync with disk warning:', err);
+  }
+}
+
 export function getDb(): DatabaseSync {
   if (!dbInstance) {
     dbInstance = new DatabaseSync(config.databasePath);
     dbInstance.exec('PRAGMA journal_mode = WAL;');
     dbInstance.exec('PRAGMA synchronous = NORMAL;');
     initSchema(dbInstance);
+    syncStorageRecordsWithDisk(dbInstance);
   }
   return dbInstance;
 }

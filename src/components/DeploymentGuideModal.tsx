@@ -36,44 +36,44 @@ export const DeploymentGuideModal: React.FC<DeploymentGuideModalProps> = ({
   };
 
   const quickstartScript = `#!/bin/bash
-# AniMayX Cloud - VPS One-Command Automated Setup for Ubuntu 22.04 / 24.04
+# AniMayX Cloud - VPS Setup for Debian 13 / Ubuntu 22.04 / 24.04
 set -e
 
-echo "=== 1. Updating Ubuntu and installing tools ==="
+echo "=== 1. Updating Debian/Ubuntu packages and installing dependencies ==="
 sudo apt-get update && sudo apt-get install -y curl git ufw nginx certbot python3-certbot-nginx
 
 echo "=== 2. Installing Node.js 22 LTS ==="
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt-get install -y nodejs
 
-echo "=== 3. Creating physical storage directories ==="
-sudo mkdir -p /storage/uploads
-sudo mkdir -p /storage/metadata
-sudo chown -R $USER:$USER /storage
-sudo chmod -R 775 /storage
+echo "=== 3. Setting up /opt/AniMayX-Cloud and storage directories ==="
+sudo mkdir -p /opt/AniMayX-Cloud/storage/uploads
+sudo mkdir -p /opt/AniMayX-Cloud/storage/metadata
+sudo chown -R $USER:$USER /opt/AniMayX-Cloud
+sudo chmod -R 775 /opt/AniMayX-Cloud/storage
 
-echo "=== 4. Setting up Application Directory ==="
-mkdir -p ~/animayx-cloud
-cd ~/animayx-cloud
+echo "=== 4. Setting up Application Code in /opt/AniMayX-Cloud ==="
+cd /opt/AniMayX-Cloud
 
-# If deploying from git repo or zip:
+# If deploying from git repo:
 # git clone <your-repo-url> .
-# npm install --production
+# npm install
 # npm run build
+# npm start
 
-echo "Setup complete! Configure your .env file and start the service."
+echo "Setup complete! Configure /opt/AniMayX-Cloud/.env and start the systemd service."
 `;
 
-  const envFileExample = `# /home/ubuntu/animayx-cloud/.env
+  const envFileExample = `# /opt/AniMayX-Cloud/.env
 # ========================================================
 # AniMayX Cloud VPS Storage & Raw File Server Configuration
 # ========================================================
 
 PORT=3000
 
-# Physical disk paths on VPS
-STORAGE_PATH="/storage/uploads"
-DATABASE_PATH="/storage/metadata/storage.db"
+# Physical disk paths on VPS (Debian 13 default)
+STORAGE_PATH="/opt/AniMayX-Cloud/storage/uploads"
+DATABASE_PATH="/opt/AniMayX-Cloud/storage/metadata/storage.db"
 
 # JWT Secret for admin session signing (generate random 32+ char string)
 JWT_SECRET="replace-with-a-random-32-char-secret-string-here"
@@ -170,8 +170,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/animayx-cloud
+User=root
+WorkingDirectory=/opt/AniMayX-Cloud
 ExecStart=/usr/bin/node dist/server.cjs
 Restart=always
 RestartSec=5
@@ -268,7 +268,7 @@ curl -I -H "Range: bytes=0-1024" https://files.example.com/f/abc123?raw=1
             <div className="space-y-3">
               <div className="bg-orange-500/10 border border-orange-500/25 rounded-2xl p-4 text-orange-200">
                 <span className="font-semibold text-orange-300 block mb-1">Architecture Overview:</span>
-                Your frontend runs at <code className="font-mono bg-black/40 text-orange-300 px-1.5 py-0.5 rounded-lg border border-orange-500/20">https://cloud.example.com</code> and interacts with your VPS backend at <code className="font-mono bg-black/40 text-orange-300 px-1.5 py-0.5 rounded-lg border border-orange-500/20">https://files.example.com</code>. Physical files stay in <code className="font-mono bg-black/40 text-orange-300 px-1.5 py-0.5 rounded-lg border border-orange-500/20">/storage/uploads</code>.
+                Your frontend runs at <code className="font-mono bg-black/40 text-orange-300 px-1.5 py-0.5 rounded-lg border border-orange-500/20">https://cloud.example.com</code> and interacts with your VPS backend at <code className="font-mono bg-black/40 text-orange-300 px-1.5 py-0.5 rounded-lg border border-orange-500/20">https://files.example.com</code>. Physical files stay in <code className="font-mono bg-black/40 text-orange-300 px-1.5 py-0.5 rounded-lg border border-orange-500/20">/opt/AniMayX-Cloud/storage/uploads</code>.
               </div>
 
               <div className="flex items-center justify-between">
@@ -414,7 +414,7 @@ sudo certbot --nginx -d files.example.com
                 <span className="font-semibold text-white block text-sm">3. Updating the Application</span>
                 <p className="text-zinc-400">Whenever you update code on the VPS:</p>
                 <pre className="bg-black/60 text-zinc-300 p-3 rounded-xl font-mono text-[11px] border border-zinc-800">
-{`cd ~/animayx-cloud
+{`cd /opt/AniMayX-Cloud
 git pull
 npm install
 npm run build

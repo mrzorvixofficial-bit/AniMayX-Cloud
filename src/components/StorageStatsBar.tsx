@@ -34,6 +34,11 @@ export const StorageStatsBar: React.FC<StorageStatsBarProps> = ({
     stats.total_bytes > 0 ? (stats.used_bytes / stats.total_bytes) * 100 : 0
   );
 
+  const storagePathDisplay =
+    stats.storage_path ||
+    stats.server_info?.storage_path ||
+    '/opt/AniMayX-Cloud/storage/uploads';
+
   const categories = [
     {
       id: 'all' as FileCategory,
@@ -110,7 +115,7 @@ export const StorageStatsBar: React.FC<StorageStatsBarProps> = ({
               </span>
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Host path: <code className="text-orange-300/90 bg-zinc-900/90 px-1.5 py-0.5 rounded-md font-mono text-[11px] border border-zinc-800">/storage/uploads</code>
+              Host path: <code className="text-orange-300/90 bg-zinc-900/90 px-1.5 py-0.5 rounded-md font-mono text-[11px] border border-zinc-800">{storagePathDisplay}</code>
             </p>
           </div>
         </div>
@@ -139,14 +144,14 @@ export const StorageStatsBar: React.FC<StorageStatsBarProps> = ({
         <div className="flex justify-between text-xs text-zinc-400 mb-2 font-medium">
           <span className="flex items-center space-x-1.5">
             <span className="w-2 h-2 rounded-full bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.8)]" />
-            <span className="text-zinc-200 font-semibold">{usedPercentage.toFixed(2)}% used</span>
+            <span className="text-zinc-200 font-semibold">{usedPercentage.toFixed(2)}% used ({formatBytes(stats.used_bytes)})</span>
           </span>
-          <span className="font-mono text-zinc-400">{formatBytes(stats.total_bytes)} Total Disk</span>
+          <span className="font-mono text-zinc-400">{formatBytes(stats.total_bytes)} Total Disk ({formatBytes(stats.free_bytes)} free)</span>
         </div>
         <div className="w-full h-3 bg-zinc-950 rounded-full overflow-hidden border border-zinc-800/80 p-0.5 flex relative">
           <motion.div
             initial={{ width: 0 }}
-            animate={{ width: `${Math.max(usedPercentage, 0.75)}%` }}
+            animate={{ width: `${Math.max(usedPercentage, stats.used_bytes > 0 ? 0.75 : 0)}%` }}
             transition={{ duration: 0.8, ease: 'easeOut' }}
             className="h-full bg-gradient-to-r from-orange-600 via-orange-500 to-amber-400 rounded-full relative overflow-hidden shadow-[0_0_14px_rgba(249,115,22,0.5)]"
           >

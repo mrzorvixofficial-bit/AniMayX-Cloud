@@ -16,9 +16,11 @@ router.get('/', requireAdmin, async (req: Request, res: Response): Promise<void>
 
     res.json({
       used_bytes: stats.used_bytes,
+      disk_used_bytes: disk.disk_used_bytes,
       total_bytes: disk.total_bytes,
       free_bytes: disk.free_bytes,
       file_count: stats.file_count,
+      storage_path: config.storagePath,
       by_type: stats.by_type,
       server_info: {
         storage_path: config.storagePath,

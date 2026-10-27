@@ -30,9 +30,18 @@ export default function App() {
 
   // Filter & Search states
   const [search, setSearch] = useState<string>('');
+  const [debouncedSearch, setDebouncedSearch] = useState<string>('');
   const [category, setCategory] = useState<FileCategory>('all');
   const [sort, setSort] = useState<SortOption>('date_desc');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+
+  // Debounce search input by 300ms to eliminate spammy duplicate network requests
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(search);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   // Modals state
   const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false);
@@ -59,7 +68,7 @@ export default function App() {
     setLoading(true);
     try {
       const data = await api.getFiles({
-        search,
+        search: debouncedSearch,
         category,
         sort,
       });
@@ -74,7 +83,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [isAuthenticated, search, category, sort]);
+  }, [isAuthenticated, debouncedSearch, category, sort]);
 
   const fetchStats = useCallback(async () => {
     if (!isAuthenticated) return;
@@ -86,12 +95,19 @@ export default function App() {
     }
   }, [isAuthenticated]);
 
+  // Fetch files when debouncedSearch, category, or sort changes
   useEffect(() => {
     if (isAuthenticated) {
       fetchFiles();
+    }
+  }, [isAuthenticated, fetchFiles]);
+
+  // Fetch stats ONLY on auth state change (login/mount) or explicit refresh
+  useEffect(() => {
+    if (isAuthenticated) {
       fetchStats();
     }
-  }, [isAuthenticated, fetchFiles, fetchStats]);
+  }, [isAuthenticated, fetchStats]);
 
   const handleLoginSuccess = () => {
     setIsAuthenticated(true);

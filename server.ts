@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { config, initDirectories } from './server/config.ts';
 import authRouter from './server/routes/auth.ts';
@@ -8,6 +10,9 @@ import filesRouter from './server/routes/files.ts';
 import uploadRouter from './server/routes/upload.ts';
 import storageRouter from './server/routes/storage.ts';
 import publicFileRouter, { sclRouter, inlineRouter } from './server/routes/publicFile.ts';
+
+const currentFilename = typeof __filename !== 'undefined' ? __filename : '';
+const currentDirname = typeof __dirname !== 'undefined' ? __dirname : (currentFilename ? path.dirname(currentFilename) : process.cwd());
 
 async function startServer() {
   // Ensure physical directories exist (/storage/uploads and /storage/metadata)
@@ -123,17 +128,70 @@ async function startServer() {
   app.use('/api/storage', storageRouter);
 
   // 3. FRONTEND SERVING (Vite in Dev or Compiled Static SPA in Prod)
-  if (process.env.NODE_ENV !== 'production') {
+  // Resolve dist directory path safely across different launch contexts (root or dist subfolder)
+  const candidateDistDirs = [
+    path.join(process.cwd(), 'dist'),
+    path.join(currentDirname, 'dist'),
+    currentDirname,
+  ];
+  const distPath = candidateDistDirs.find((dir) => fs.existsSync(path.join(dir, 'index.html'))) || path.join(process.cwd(), 'dist');
+  const hasBuiltDist = fs.existsSync(path.join(distPath, 'index.html'));
+
+  // If dist has been built and NODE_ENV is not explicitly 'development', serve production SPA
+  const isProduction =
+    process.env.NODE_ENV === 'production' ||
+    Boolean(currentFilename && currentFilename.endsWith('server.cjs')) ||
+    (hasBuiltDist && process.env.NODE_ENV !== 'development');
+
+  if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        host: '0.0.0.0',
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+    // Serve static frontend assets (CSS, JS, images, fonts)
+    app.use(
+      express.static(distPath, {
+        index: false,
+        maxAge: '1d',
+        setHeaders: (res, filePath) => {
+          // Allow cross-origin asset loading for stylesheets, scripts, fonts, and images
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+          if (filePath.endsWith('.css')) {
+            res.setHeader('Content-Type', 'text/css; charset=UTF-8');
+          } else if (filePath.endsWith('.js') || filePath.endsWith('.mjs')) {
+            res.setHeader('Content-Type', 'application/javascript; charset=UTF-8');
+          }
+        },
+      })
+    );
+
+    // SPA fallback: return index.html for page navigation, but return 404 for missing static assets
+    app.get('*', (req, res, next) => {
+      // If the request was for an asset (/assets/*, or file extension) that wasn't found by express.static,
+      // return 404 instead of index.html so browsers don't fail MIME type checks on CSS/JS!
+      if (
+        req.path.startsWith('/assets/') ||
+        /\.(css|js|map|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot)$/i.test(req.path)
+      ) {
+        res.status(404).type('text/plain').send('Asset not found');
+        return;
+      }
+
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.setHeader('Content-Type', 'text/html; charset=UTF-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.sendFile(indexPath);
+      } else {
+        res.status(500).send('Production build not found. Please run "npm run build" first.');
+      }
     });
   }
 

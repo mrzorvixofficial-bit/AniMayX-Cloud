@@ -32,7 +32,13 @@ export function sanitizeFilename(rawName: string): string {
 
 // Safe internal storage path resolution
 export function getSafeFilePath(internalFilename: string): string {
-  const resolved = path.resolve(config.storagePath, internalFilename);
+  // If already an absolute path that starts with config.storagePath
+  if (path.isAbsolute(internalFilename) && internalFilename.startsWith(config.storagePath)) {
+    return internalFilename;
+  }
+  // Base name only to prevent traversal
+  const safeBase = path.basename(internalFilename);
+  const resolved = path.resolve(config.storagePath, safeBase);
   if (!resolved.startsWith(config.storagePath)) {
     throw new Error('Access denied: Path traversal detected');
   }
@@ -49,25 +55,34 @@ export function resolveMimeType(filename: string, fallbackMime?: string): string
 
 // Disk and quota metrics
 export async function getDiskMetrics(usedBytes: number) {
-  // Try statfs if supported in Node on linux/posix
   let totalBytes = 100 * 1024 * 1024 * 1024; // 100 GB default quota
   let freeBytes = totalBytes - usedBytes;
 
   try {
     if (fs.statfsSync) {
+      // Query filesystem where storagePath is mounted
       const stats = fs.statfsSync(config.storagePath);
       totalBytes = stats.blocks * stats.bsize;
-      freeBytes = stats.bfree * stats.bsize;
+      // In POSIX, bavail is available blocks for unprivileged users (real free space)
+      freeBytes = (typeof stats.bavail === 'number' && stats.bavail > 0 ? stats.bavail : stats.bfree) * stats.bsize;
     }
   } catch {
-    // fallback to quota math
-    freeBytes = Math.max(0, totalBytes - usedBytes);
+    try {
+      if (fs.statfsSync) {
+        const stats = fs.statfsSync(process.cwd());
+        totalBytes = stats.blocks * stats.bsize;
+        freeBytes = (typeof stats.bavail === 'number' && stats.bavail > 0 ? stats.bavail : stats.bfree) * stats.bsize;
+      }
+    } catch {
+      freeBytes = Math.max(0, totalBytes - usedBytes);
+    }
   }
 
   return {
-    used_bytes: usedBytes,
-    total_bytes: totalBytes,
-    free_bytes: freeBytes,
+    used_bytes: usedBytes, // Size of AniMayX uploaded files
+    disk_used_bytes: Math.max(0, totalBytes - freeBytes), // Total filesystem disk usage
+    total_bytes: totalBytes, // Physical disk capacity
+    free_bytes: freeBytes, // Physical disk free space
   };
 }
 
