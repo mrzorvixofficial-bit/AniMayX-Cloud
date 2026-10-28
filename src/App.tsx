@@ -6,7 +6,9 @@ import {
   FileCategory,
   SortOption,
 } from './types.ts';
+import { Sidebar } from './components/Sidebar.tsx';
 import { Navbar } from './components/Navbar.tsx';
+import { DashboardOverview } from './components/DashboardOverview.tsx';
 import { StorageStatsBar } from './components/StorageStatsBar.tsx';
 import { FileList } from './components/FileList.tsx';
 import { FileUploader } from './components/FileUploader.tsx';
@@ -22,6 +24,10 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(
     api.isAuthenticated()
   );
+
+  // Views & Navigation
+  const [activeView, setActiveView] = useState<'overview' | 'files'>('overview');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState<boolean>(false);
 
   // Data states
   const [files, setFiles] = useState<StoredFile[]>([]);
@@ -75,7 +81,6 @@ export default function App() {
       setFiles(data);
     } catch (err: unknown) {
       console.error('Failed to load files:', err);
-      // If 401 unauthorized, log out
       if (err instanceof Error && err.message.toLowerCase().includes('unauthorized')) {
         api.logout();
         setIsAuthenticated(false);
@@ -102,12 +107,18 @@ export default function App() {
     }
   }, [isAuthenticated, fetchFiles]);
 
-  // Fetch stats ONLY on auth state change (login/mount) or explicit refresh
+  // Fetch stats on auth state change (login/mount)
   useEffect(() => {
     if (isAuthenticated) {
       fetchStats();
     }
   }, [isAuthenticated, fetchStats]);
+
+  const handleRefresh = () => {
+    fetchFiles();
+    fetchStats();
+    showToast('Storage & files refreshed');
+  };
 
   const handleLoginSuccess = () => {
     setIsAuthenticated(true);
@@ -176,49 +187,121 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#09090b] flex flex-col font-sans text-zinc-100 selection:bg-orange-500 selection:text-white">
-      {/* Top Navigation */}
-      <Navbar
-        storageStats={stats}
+    <div className="min-h-screen bg-[#09090b] flex font-sans text-zinc-100 selection:bg-orange-500 selection:text-white antialiased">
+      {/* Sidebar: Navigation, categories, system tools, storage capacity widget */}
+      <Sidebar
+        activeView={activeView}
+        setActiveView={setActiveView}
+        activeCategory={category}
+        onSelectCategory={(cat) => {
+          setCategory(cat);
+          setActiveView('files');
+        }}
+        stats={stats}
         onOpenUpload={() => setIsUploadOpen(true)}
         onOpenTester={() => setIsTesterOpen(true)}
         onOpenGuide={() => setIsGuideOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onLogout={handleLogout}
-        totalFiles={stats?.file_count ?? files.length}
+        isOpenMobile={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
       />
 
-      {/* Main Dashboard Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Storage Analytics & Category Filter Tabs */}
-        <StorageStatsBar
-          stats={stats}
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-screen">
+        {/* Top Navbar */}
+        <Navbar
+          storageStats={stats}
           activeCategory={category}
-          onSelectCategory={(cat) => setCategory(cat)}
-        />
-
-        {/* File Browser Area */}
-        <FileList
-          files={files}
+          activeView={activeView}
           search={search}
-          onSearchChange={setSearch}
-          category={category}
-          onCategoryChange={setCategory}
-          sort={sort}
-          onSortChange={setSort}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-          onSelectFile={(f) => setInspectedFile(f)}
-          onDeleteFile={(f) => setFileToDelete(f)}
-          onRenameFile={(f) => setFileToRename(f)}
+          onSearchChange={(val) => {
+            setSearch(val);
+            if (activeView !== 'files') setActiveView('files');
+          }}
           onOpenUpload={() => setIsUploadOpen(true)}
+          onRefresh={handleRefresh}
+          onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
           loading={loading}
         />
-      </main>
+
+        {/* Dashboard Main Workspace */}
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+          {activeView === 'overview' ? (
+            <div className="space-y-6">
+              <DashboardOverview
+                stats={stats}
+                onSelectCategory={(cat) => {
+                  setCategory(cat);
+                  setActiveView('files');
+                }}
+                onOpenUpload={() => setIsUploadOpen(true)}
+                onViewFiles={() => setActiveView('files')}
+              />
+
+              {/* Recent Files Section on Overview page */}
+              <div className="space-y-3 pt-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-white">Recent Uploaded Files</h3>
+                  <button
+                    onClick={() => setActiveView('files')}
+                    className="text-xs text-orange-400 hover:text-orange-300 font-medium cursor-pointer"
+                  >
+                    View All Files ({files.length}) →
+                  </button>
+                </div>
+                <FileList
+                  files={files.slice(0, 8)}
+                  search={search}
+                  onSearchChange={setSearch}
+                  category={category}
+                  onCategoryChange={setCategory}
+                  sort={sort}
+                  onSortChange={setSort}
+                  viewMode={viewMode}
+                  onViewModeChange={setViewMode}
+                  onSelectFile={(f) => setInspectedFile(f)}
+                  onDeleteFile={(f) => setFileToDelete(f)}
+                  onRenameFile={(f) => setFileToRename(f)}
+                  onOpenUpload={() => setIsUploadOpen(true)}
+                  loading={loading}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Category tabs switcher inside Files view */}
+              <StorageStatsBar
+                stats={stats}
+                activeCategory={category}
+                onSelectCategory={(cat) => setCategory(cat)}
+              />
+
+              {/* Full File Browser */}
+              <FileList
+                files={files}
+                search={search}
+                onSearchChange={setSearch}
+                category={category}
+                onCategoryChange={setCategory}
+                sort={sort}
+                onSortChange={setSort}
+                viewMode={viewMode}
+                onViewModeChange={setViewMode}
+                onSelectFile={(f) => setInspectedFile(f)}
+                onDeleteFile={(f) => setFileToDelete(f)}
+                onRenameFile={(f) => setFileToRename(f)}
+                onOpenUpload={() => setIsUploadOpen(true)}
+                loading={loading}
+              />
+            </div>
+          )}
+        </main>
+      </div>
 
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-[#141418] text-white text-xs font-medium px-4 py-3 rounded-2xl shadow-xl shadow-black border border-orange-500/30 animate-fade-in flex items-center space-x-2.5">
+        <div className="fixed bottom-6 right-6 z-50 bg-[#141418] text-white text-xs font-medium px-4 py-3 rounded-2xl shadow-xl shadow-black border border-orange-500/30 flex items-center space-x-2.5">
           <div className="w-2 h-2 rounded-full bg-orange-500 animate-pulse shadow-[0_0_8px_rgba(249,115,22,0.8)]" />
           <span>{toastMessage}</span>
         </div>
