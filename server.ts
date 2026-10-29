@@ -9,6 +9,7 @@ import authRouter from './server/routes/auth.ts';
 import filesRouter from './server/routes/files.ts';
 import uploadRouter from './server/routes/upload.ts';
 import storageRouter from './server/routes/storage.ts';
+import foldersRouter from './server/routes/folders.ts';
 import publicFileRouter, { sclRouter, inlineRouter } from './server/routes/publicFile.ts';
 
 const currentFilename = typeof __filename !== 'undefined' ? __filename : '';
@@ -125,6 +126,7 @@ async function startServer() {
   app.use('/api/auth', authRouter);
   app.use('/api/upload', uploadRouter);
   app.use('/api/files', filesRouter);
+  app.use('/api/folders', foldersRouter);
   app.use('/api/storage', storageRouter);
 
   // 3. FRONTEND SERVING (Vite in Dev or Compiled Static SPA in Prod)

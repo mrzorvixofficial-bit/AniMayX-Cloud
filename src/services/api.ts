@@ -1,4 +1,4 @@
-import { StoredFile, StorageStats, FileCategory, SortOption } from '../types.ts';
+import { StoredFile, FolderItem, StorageStats, FileCategory, SortOption } from '../types.ts';
 import { formatBytes } from '../utils/formatters.ts';
 
 const TOKEN_KEY = 'vps_storage_admin_token';
@@ -258,6 +258,31 @@ export const api = {
 
   async deleteFile(id: string): Promise<void> {
     await request(`/api/files/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getFolders(): Promise<FolderItem[]> {
+    const res = await request<{ folders: FolderItem[] }>('/api/folders');
+    return res.folders || [];
+  },
+
+  async createFolder(name: string, parentPath?: string): Promise<{ success: boolean; folder: FolderItem }> {
+    return request<{ success: boolean; folder: FolderItem }>('/api/folders', {
+      method: 'POST',
+      body: JSON.stringify({ name, parent_path: parentPath || '' }),
+    });
+  },
+
+  async renameFolder(id: string, name: string): Promise<{ success: boolean; folder: FolderItem }> {
+    return request<{ success: boolean; folder: FolderItem }>(`/api/folders/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    });
+  },
+
+  async deleteFolder(id: string, deleteFiles: boolean = false): Promise<{ success: boolean; deletedCount: number }> {
+    return request<{ success: boolean; deletedCount: number }>(`/api/folders/${id}?deleteFiles=${deleteFiles}`, {
       method: 'DELETE',
     });
   },

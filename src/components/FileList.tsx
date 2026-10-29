@@ -8,20 +8,29 @@ import {
   FileQuestion,
   UploadCloud,
   Folder,
-  ChevronDown,
+  FolderPlus,
+  FolderUp,
+  FolderOpen,
   ChevronRight,
+  ArrowLeft,
+  Home,
   Copy,
   Check,
   Sparkles,
   Command,
 } from 'lucide-react';
-import { StoredFile, FileCategory, SortOption } from '../types.ts';
+import { StoredFile, FolderItem, FileCategory, SortOption } from '../types.ts';
 import { FileCard } from './FileCard.tsx';
 import { FileRow } from './FileRow.tsx';
+import { FolderCard } from './FolderCard.tsx';
 import { playClickSound, playSuccessSound } from '../utils/sound.ts';
+import { formatBytes } from '../utils/formatters.ts';
 
 interface FileListProps {
   files: StoredFile[];
+  folders: FolderItem[];
+  currentFolder: string;
+  onCurrentFolderChange: (path: string) => void;
   search: string;
   onSearchChange: (val: string) => void;
   category: FileCategory;
@@ -33,12 +42,21 @@ interface FileListProps {
   onSelectFile: (file: StoredFile) => void;
   onDeleteFile: (file: StoredFile) => void;
   onRenameFile: (file: StoredFile) => void;
-  onOpenUpload: () => void;
+  onOpenUpload: (targetFolder?: string) => void;
+  onOpenCreateFolder: (currentFolder: string) => void;
+  onRenameFolder: (folder: FolderItem) => void;
+  onDeleteFolder: (folder: FolderItem) => void;
+  onCopyFolderLinks?: (folder: FolderItem) => void;
+  onDropFilesToFolder?: (folder: FolderItem, files: FileList | File[]) => void;
+  onDropFilesToCurrent?: (files: FileList | File[]) => void;
   loading: boolean;
 }
 
 export const FileList: React.FC<FileListProps> = ({
   files,
+  folders,
+  currentFolder,
+  onCurrentFolderChange,
   search,
   onSearchChange,
   category,
@@ -51,16 +69,25 @@ export const FileList: React.FC<FileListProps> = ({
   onDeleteFile,
   onRenameFile,
   onOpenUpload,
+  onOpenCreateFolder,
+  onRenameFolder,
+  onDeleteFolder,
+  onCopyFolderLinks,
+  onDropFilesToFolder,
+  onDropFilesToCurrent,
   loading,
 }) => {
-  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
   const [copiedFolder, setCopiedFolder] = useState<string | null>(null);
+  const [isDropActive, setIsDropActive] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Keyboard shortcut: Press '/' or 'Ctrl+K' / 'Cmd+K' to focus search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === '/' || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k')) && document.activeElement !== searchInputRef.current) {
+      if (
+        (e.key === '/' || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k')) &&
+        document.activeElement !== searchInputRef.current
+      ) {
         e.preventDefault();
         searchInputRef.current?.focus();
       }
@@ -69,43 +96,96 @@ export const FileList: React.FC<FileListProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  // Group files by folder_path
-  const grouped = useMemo(() => {
-    const foldersMap: Record<string, StoredFile[]> = {};
-    const rootFiles: StoredFile[] = [];
+  // Split breadcrumbs
+  const breadcrumbSegments = useMemo(() => {
+    if (!currentFolder) return [];
+    return currentFolder.split('/').filter(Boolean);
+  }, [currentFolder]);
 
-    files.forEach((file) => {
-      if (file.folder_path && file.folder_path.trim()) {
-        const folderName = file.folder_path.trim();
-        if (!foldersMap[folderName]) {
-          foldersMap[folderName] = [];
-        }
-        foldersMap[folderName].push(file);
-      } else {
-        rootFiles.push(file);
-      }
-    });
-
-    return { foldersMap, rootFiles };
-  }, [files]);
-
-  const toggleFolder = (folderName: string) => {
+  // Navigate back one level
+  const handleGoBack = () => {
     playClickSound();
-    setCollapsedFolders((prev) => ({
-      ...prev,
-      [folderName]: !prev[folderName],
-    }));
+    if (!currentFolder) return;
+    const parts = currentFolder.split('/').filter(Boolean);
+    parts.pop();
+    onCurrentFolderChange(parts.join('/'));
   };
 
-  const copyFolderLinks = (folderName: string, folderFiles: StoredFile[]) => {
+  // Navigate to specific breadcrumb segment
+  const handleNavigateBreadcrumb = (index: number) => {
+    playClickSound();
+    if (index < 0) {
+      onCurrentFolderChange('');
+      return;
+    }
+    const target = breadcrumbSegments.slice(0, index + 1).join('/');
+    onCurrentFolderChange(target);
+  };
+
+  // Subfolders in the current directory (when not in global search)
+  const subfolders = useMemo(() => {
+    if (search.trim()) {
+      // If search query is entered, match folder names too
+      const term = search.trim().toLowerCase();
+      return folders.filter((f) => f.name.toLowerCase().includes(term));
+    }
+    const cleanCurrent = currentFolder.replace(/^\/+|\/+$/g, '').trim();
+    return folders.filter((f) => {
+      const parent = (f.parent_path || '').replace(/^\/+|\/+$/g, '').trim();
+      return parent === cleanCurrent;
+    });
+  }, [folders, currentFolder, search]);
+
+  // Files in the current directory (or filtered by search)
+  const currentFiles = useMemo(() => {
+    if (search.trim()) {
+      // Search matches globally
+      return files;
+    }
+    const cleanCurrent = currentFolder.replace(/^\/+|\/+$/g, '').trim();
+    return files.filter((f) => {
+      const fFolder = (f.folder_path || '').replace(/^\/+|\/+$/g, '').trim();
+      return fFolder === cleanCurrent;
+    });
+  }, [files, currentFolder, search]);
+
+  const copyFolderPublicLinks = (folder: FolderItem) => {
+    const folderFiles = files.filter((f) => {
+      const fPath = (f.folder_path || '').replace(/^\/+|\/+$/g, '').trim();
+      return fPath === folder.path || fPath.startsWith(folder.path + '/');
+    });
+
+    if (folderFiles.length === 0) return;
     const links = folderFiles.map((f) => f.public_url).join('\n');
     navigator.clipboard.writeText(links);
     playSuccessSound();
-    setCopiedFolder(folderName);
+    setCopiedFolder(folder.id);
     setTimeout(() => setCopiedFolder(null), 2000);
   };
 
-  const renderFilesList = (filesList: StoredFile[]) => {
+  // Drag and drop onto FileList workspace
+  const handleContainerDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropActive(true);
+  };
+
+  const handleContainerDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropActive(false);
+  };
+
+  const handleContainerDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0 && onDropFilesToCurrent) {
+      onDropFilesToCurrent(e.dataTransfer.files);
+    }
+  };
+
+  const renderFilesGridOrList = (filesList: StoredFile[]) => {
     if (viewMode === 'grid') {
       return (
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -155,11 +235,101 @@ export const FileList: React.FC<FileListProps> = ({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: 0.1 }}
-      className="bg-[#0f0f13]/90 backdrop-blur-xl rounded-3xl border border-zinc-800/80 shadow-2xl shadow-black/70 overflow-hidden"
+      onDragOver={handleContainerDragOver}
+      onDragLeave={handleContainerDragLeave}
+      onDrop={handleContainerDrop}
+      className={`bg-[#0f0f13]/90 backdrop-blur-xl rounded-3xl border border-zinc-800/80 shadow-2xl shadow-black/70 overflow-hidden relative ${
+        isDropActive ? 'ring-2 ring-orange-500 bg-zinc-900/40' : ''
+      }`}
     >
-      {/* Search and Filters Toolbar */}
-      <div className="p-4 sm:p-5 border-b border-zinc-800/80 flex flex-col sm:flex-row items-center justify-between gap-3.5 bg-zinc-900/30">
-        {/* Search input with shortcut badge */}
+      {/* 1. Breadcrumbs & Primary Action Header */}
+      <div className="p-4 sm:p-5 border-b border-zinc-800/80 bg-zinc-900/40 flex flex-wrap items-center justify-between gap-3">
+        {/* Breadcrumb Path Bar */}
+        <div className="flex items-center space-x-1.5 overflow-x-auto py-1 max-w-full text-xs">
+          {currentFolder ? (
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={handleGoBack}
+              className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-orange-500/50 text-zinc-300 hover:text-white transition-all cursor-pointer mr-1"
+              title="Go back up one level"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 text-orange-400" />
+              <span className="font-semibold">Back</span>
+            </motion.button>
+          ) : null}
+
+          {/* Root button */}
+          <button
+            onClick={() => handleNavigateBreadcrumb(-1)}
+            className={`inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-xl transition-all cursor-pointer font-semibold ${
+              !currentFolder
+                ? 'bg-orange-500/10 text-orange-400 border border-orange-500/30'
+                : 'text-zinc-400 hover:text-white hover:bg-zinc-800/60'
+            }`}
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span>Root</span>
+          </button>
+
+          {/* Nested path segments */}
+          {breadcrumbSegments.map((seg, idx) => {
+            const isLast = idx === breadcrumbSegments.length - 1;
+            return (
+              <React.Fragment key={idx}>
+                <ChevronRight className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+                <button
+                  onClick={() => handleNavigateBreadcrumb(idx)}
+                  className={`px-2.5 py-1.5 rounded-xl transition-all font-semibold font-mono truncate max-w-[140px] cursor-pointer ${
+                    isLast
+                      ? 'bg-orange-500/15 text-orange-300 border border-orange-500/30 shadow-xs'
+                      : 'text-zinc-400 hover:text-white hover:bg-zinc-800/60'
+                  }`}
+                  title={seg}
+                >
+                  {seg}
+                </button>
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        {/* Folder Management & Upload Quick Action Buttons */}
+        <div className="flex items-center space-x-2">
+          {/* New Folder Button */}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => {
+              playClickSound();
+              onOpenCreateFolder(currentFolder);
+            }}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-orange-500/50 text-zinc-200 hover:text-white text-xs font-semibold shadow-sm transition-all cursor-pointer"
+            title="Create a new folder inside current directory"
+          >
+            <FolderPlus className="w-3.5 h-3.5 text-orange-400" />
+            <span>New Folder</span>
+          </motion.button>
+
+          {/* Upload Folder Button */}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => {
+              playClickSound();
+              onOpenUpload(currentFolder);
+            }}
+            className="inline-flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white text-xs font-semibold shadow-lg shadow-orange-500/20 transition-all cursor-pointer"
+            title="Upload files or full folders to current directory"
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span>Upload</span>
+          </motion.button>
+        </div>
+      </div>
+
+      {/* 2. Search, Sort, and View Switcher Toolbar */}
+      <div className="p-4 sm:p-5 border-b border-zinc-800/80 flex flex-col sm:flex-row items-center justify-between gap-3.5 bg-zinc-900/20">
+        {/* Search input with keyboard shortcut */}
         <div className="relative w-full sm:w-88">
           <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
@@ -237,8 +407,8 @@ export const FileList: React.FC<FileListProps> = ({
         </div>
       </div>
 
-      {/* Main File Content Area */}
-      <div className="p-4 sm:p-6">
+      {/* 3. Main File & Folder Explorer View */}
+      <div className="p-4 sm:p-6 space-y-6">
         {loading ? (
           <div className="py-24 text-center">
             <div className="relative w-10 h-10 mx-auto mb-3">
@@ -249,106 +419,129 @@ export const FileList: React.FC<FileListProps> = ({
             </div>
             <p className="text-xs font-mono text-zinc-400">Fetching VPS Storage Records...</p>
           </div>
-        ) : files.length === 0 ? (
+        ) : subfolders.length === 0 && currentFiles.length === 0 ? (
+          /* Empty state */
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             className="py-20 text-center max-w-sm mx-auto"
           >
             <div className="w-16 h-16 rounded-3xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-500 mx-auto mb-4 shadow-inner">
-              <FileQuestion className="w-8 h-8 text-orange-400/80 drop-shadow-[0_0_10px_rgba(249,115,22,0.3)]" />
+              {currentFolder ? (
+                <FolderOpen className="w-8 h-8 text-orange-400/80 drop-shadow-[0_0_10px_rgba(249,115,22,0.3)]" />
+              ) : (
+                <FileQuestion className="w-8 h-8 text-orange-400/80 drop-shadow-[0_0_10px_rgba(249,115,22,0.3)]" />
+              )}
             </div>
-            <h3 className="text-sm font-bold text-white tracking-wide">No files found</h3>
+            <h3 className="text-sm font-bold text-white tracking-wide">
+              {currentFolder ? `Folder "${breadcrumbSegments[breadcrumbSegments.length - 1] || currentFolder}" is empty` : 'No files or folders found'}
+            </h3>
             <p className="text-xs text-zinc-400 mt-1.5 mb-6 leading-relaxed">
               {search
-                ? `No files match "${search}". Try clearing search or selecting a different category.`
-                : 'Your AniMayX Cloud VPS storage is currently empty. Upload your first video, image, or document.'}
+                ? `No items match "${search}". Try clearing search or choosing a different directory.`
+                : currentFolder
+                ? `There are no files or subfolders inside /${currentFolder} yet. Upload files or create a subfolder here.`
+                : 'Your VPS storage is empty. Upload your first file or create a folder.'}
             </p>
-            <motion.button
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.96 }}
-              onClick={() => {
-                playClickSound();
-                onOpenUpload();
-              }}
-              className="inline-flex items-center space-x-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/25 transition-all cursor-pointer"
-            >
-              <UploadCloud className="w-4 h-4 text-white" />
-              <span>Upload New File</span>
-            </motion.button>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+              <motion.button
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
+                onClick={() => {
+                  playClickSound();
+                  onOpenCreateFolder(currentFolder);
+                }}
+                className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 text-xs font-semibold px-4 py-2.5 rounded-xl border border-zinc-700 transition-all cursor-pointer"
+              >
+                <FolderPlus className="w-4 h-4 text-orange-400" />
+                <span>+ New Folder</span>
+              </motion.button>
+
+              <motion.button
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
+                onClick={() => {
+                  playClickSound();
+                  onOpenUpload(currentFolder);
+                }}
+                className="w-full sm:w-auto inline-flex items-center justify-center space-x-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white text-xs font-semibold px-5 py-2.5 rounded-xl shadow-lg shadow-orange-500/25 transition-all cursor-pointer"
+              >
+                <UploadCloud className="w-4 h-4 text-white" />
+                <span>Upload Files Here</span>
+              </motion.button>
+            </div>
           </motion.div>
-        ) : Object.keys(grouped.foldersMap).length > 0 ? (
+        ) : (
           <div className="space-y-6">
-            {/* Render grouped folders */}
-            {(Object.entries(grouped.foldersMap) as [string, StoredFile[]][]).map(([folderName, folderFiles]) => {
-              const isCollapsed = !!collapsedFolders[folderName];
-              const isCopied = copiedFolder === folderName;
-
-              return (
-                <div key={folderName} className="border border-zinc-800/80 rounded-2xl overflow-hidden bg-zinc-950/20 shadow-lg">
-                  {/* Folder header */}
-                  <div
-                    onClick={() => toggleFolder(folderName)}
-                    className="p-4 bg-zinc-900/60 hover:bg-zinc-900/90 flex items-center justify-between cursor-pointer transition-all border-b border-zinc-800/60 select-none"
-                  >
-                    <div className="flex items-center space-x-3 min-w-0">
-                      <div className="text-zinc-500 shrink-0">
-                        {isCollapsed ? <ChevronRight className="w-4.5 h-4.5" /> : <ChevronDown className="w-4.5 h-4.5" />}
-                      </div>
-                      <div className="w-9 h-9 rounded-xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center text-orange-500 shrink-0 shadow-inner">
-                        <Folder className="w-5 h-5 text-orange-400 fill-orange-400/10" />
-                      </div>
-                      <div className="truncate">
-                        <h4 className="text-xs sm:text-sm font-semibold text-white truncate">{folderName}</h4>
-                        <p className="text-[10px] text-zinc-400 mt-0.5 font-mono">{folderFiles.length} files inside</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center space-x-2" onClick={(e) => e.stopPropagation()}>
-                      {/* Copy All Links Button */}
-                      <button
-                        onClick={() => copyFolderLinks(folderName, folderFiles)}
-                        className={`inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all border cursor-pointer ${
-                          isCopied
-                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.1)]'
-                            : 'bg-zinc-950 border-zinc-800 hover:border-orange-500 text-orange-400 hover:text-orange-300 shadow-sm shadow-black/45'
-                        }`}
-                        title="Copy direct raw URLs of all files inside this folder"
-                      >
-                        {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                        <span>{isCopied ? 'Copied Links!' : 'Copy All Links'}</span>
-                      </button>
-                    </div>
+            {/* 3a. Subfolders Grid */}
+            {subfolders.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex items-center space-x-2">
+                    <Folder className="w-4 h-4 text-orange-400" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                      Folders ({subfolders.length})
+                    </h4>
                   </div>
-
-                  {/* Folder contents */}
-                  {!isCollapsed && (
-                    <div className="p-4 bg-zinc-950/10">
-                      {renderFilesList(folderFiles)}
-                    </div>
-                  )}
+                  <span className="text-[11px] text-zinc-500">
+                    Click to open • Drag files to drop inside
+                  </span>
                 </div>
-              );
-            })}
 
-            {/* Render remaining root files */}
-            {grouped.rootFiles.length > 0 && (
-              <div className="space-y-3 pt-2">
-                <div className="flex items-center space-x-2 px-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse" />
-                  <h4 className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">Root Directory Files</h4>
-                  <span className="text-[11px] text-zinc-500 font-mono">({grouped.rootFiles.length} files)</span>
-                </div>
-                <div className="p-1">
-                  {renderFilesList(grouped.rootFiles)}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                  {subfolders.map((folder) => (
+                    <FolderCard
+                      key={folder.id}
+                      folder={folder}
+                      onOpen={(f) => {
+                        onCurrentFolderChange(f.path);
+                      }}
+                      onRename={onRenameFolder}
+                      onDelete={onDeleteFolder}
+                      onCopyLinks={copyFolderPublicLinks}
+                      onDropFiles={onDropFilesToFolder}
+                    />
+                  ))}
                 </div>
               </div>
             )}
+
+            {/* 3b. Files in Current Directory */}
+            {currentFiles.length > 0 && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-1 pt-1">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-zinc-300">
+                      {search ? `Matching Files (${currentFiles.length})` : `Files in /${currentFolder || 'Root'} (${currentFiles.length})`}
+                    </h4>
+                  </div>
+                  {search && (
+                    <span className="text-[11px] text-orange-400 font-mono">
+                      Showing global search results
+                    </span>
+                  )}
+                </div>
+
+                {renderFilesGridOrList(currentFiles)}
+              </div>
+            )}
           </div>
-        ) : (
-          renderFilesList(files)
         )}
       </div>
+
+      {/* Full-view Drag & Drop Overlay */}
+      {isDropActive && (
+        <div className="absolute inset-0 bg-black/85 backdrop-blur-sm border-2 border-dashed border-orange-500 z-50 rounded-3xl flex flex-col items-center justify-center p-6 text-center select-none">
+          <div className="w-16 h-16 rounded-3xl bg-orange-500/20 border border-orange-500/40 text-orange-400 flex items-center justify-center mb-3 shadow-[0_0_24px_rgba(249,115,22,0.4)]">
+            <UploadCloud className="w-8 h-8 animate-bounce text-orange-400" />
+          </div>
+          <h3 className="text-base font-bold text-white">Drop files or folder here</h3>
+          <p className="text-xs text-zinc-300 mt-1 font-mono">
+            Uploading directly to: <span className="text-orange-400 font-bold">/{currentFolder || '(Root)'}</span>
+          </p>
+        </div>
+      )}
     </motion.div>
   );
 };

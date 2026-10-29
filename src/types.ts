@@ -15,6 +15,17 @@ export interface StoredFile {
   upload_status?: string | null;
 }
 
+export interface FolderItem {
+  id: string;
+  name: string;
+  path: string;
+  parent_path: string;
+  created_at: number;
+  updated_at: number;
+  file_count?: number;
+  total_size?: number;
+}
+
 export interface StorageStats {
   used_bytes: number;
   disk_used_bytes?: number;

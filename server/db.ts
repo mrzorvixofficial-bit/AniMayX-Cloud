@@ -23,6 +23,17 @@ export interface DbFile {
   upload_status?: string | null;
 }
 
+export interface DbFolder {
+  id: string;
+  name: string;
+  path: string;
+  parent_path: string;
+  created_at: number;
+  updated_at: number;
+  file_count?: number;
+  total_size?: number;
+}
+
 let dbInstance: DatabaseSync | null = null;
 
 /**
@@ -132,16 +143,60 @@ function initSchema(db: DatabaseSync) {
     CREATE INDEX IF NOT EXISTS idx_files_mime ON files(mime_type);
     CREATE INDEX IF NOT EXISTS idx_files_folder ON files(folder_path);
 
+    CREATE TABLE IF NOT EXISTS folders (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      parent_path TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_folders_path ON folders(path);
+    CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_path);
+
     CREATE TABLE IF NOT EXISTS admin_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
   `);
+
+  // Migrate/ensure existing folder_paths from files table exist in folders table
+  try {
+    const existingFolderRows = db.prepare(`SELECT DISTINCT folder_path FROM files WHERE folder_path IS NOT NULL AND folder_path != ''`).all() as { folder_path: string }[];
+    for (const row of existingFolderRows) {
+      if (!row.folder_path) continue;
+      const parts = row.folder_path.split('/').map(p => p.trim()).filter(Boolean);
+      let currentPath = '';
+      for (let i = 0; i < parts.length; i++) {
+        const seg = parts[i];
+        const parentPath = currentPath;
+        currentPath = currentPath ? `${currentPath}/${seg}` : seg;
+        try {
+          db.prepare(`
+            INSERT OR IGNORE INTO folders (id, name, path, parent_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).run(
+            `fld_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            seg,
+            currentPath,
+            parentPath,
+            Date.now(),
+            Date.now()
+          );
+        } catch {}
+      }
+    }
+  } catch (err) {
+    console.warn('[Folders] Syncing initial folders warning:', err);
+  }
 }
 
 export const dbService = {
   insertFile(file: DbFile): void {
     const db = getDb();
+    if (file.folder_path && file.folder_path.trim()) {
+      dbService.ensureFolderPath(file.folder_path.trim());
+    }
     const stmt = db.prepare(`
       INSERT INTO files (id, original_name, sanitized_name, file_path, mime_type, size, created_at, updated_at, download_count, folder_path, storage_backend, mega_file_id, mega_share_link, upload_status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -321,5 +376,211 @@ export const dbService = {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `);
     stmt.run(key, value);
+  },
+
+  ensureFolderPath(folderPath: string): void {
+    const cleanPath = folderPath.replace(/^\/+|\/+$/g, '').trim();
+    if (!cleanPath) return;
+    const db = getDb();
+    const parts = cleanPath.split('/').map((p) => p.trim()).filter(Boolean);
+    let currentPath = '';
+    for (let i = 0; i < parts.length; i++) {
+      const seg = parts[i];
+      const parentPath = currentPath;
+      currentPath = currentPath ? `${currentPath}/${seg}` : seg;
+      try {
+        db.prepare(`
+          INSERT OR IGNORE INTO folders (id, name, path, parent_path, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(
+          `fld_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+          seg,
+          currentPath,
+          parentPath,
+          Date.now(),
+          Date.now()
+        );
+      } catch {}
+    }
+  },
+
+  createFolder(name: string, parentPath: string = ''): DbFolder {
+    const db = getDb();
+    const trimmedName = name.trim().replace(/[\/\\]/g, '-');
+    if (!trimmedName) {
+      throw new Error('Folder name cannot be empty');
+    }
+    const cleanParent = parentPath.replace(/^\/+|\/+$/g, '').trim();
+    const fullPath = cleanParent ? `${cleanParent}/${trimmedName}` : trimmedName;
+
+    // Check if exists
+    const checkStmt = db.prepare('SELECT * FROM folders WHERE path = ?');
+    const existing = checkStmt.get(fullPath) as unknown as DbFolder | undefined;
+    if (existing) {
+      return existing;
+    }
+
+    if (cleanParent) {
+      this.ensureFolderPath(cleanParent);
+    }
+
+    const id = `fld_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = Date.now();
+    const stmt = db.prepare(`
+      INSERT INTO folders (id, name, path, parent_path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(id, trimmedName, fullPath, cleanParent, now, now);
+
+    return {
+      id,
+      name: trimmedName,
+      path: fullPath,
+      parent_path: cleanParent,
+      created_at: now,
+      updated_at: now,
+      file_count: 0,
+      total_size: 0,
+    };
+  },
+
+  getAllFolders(): (DbFolder & { file_count: number; total_size: number })[] {
+    const db = getDb();
+    const foldersStmt = db.prepare('SELECT * FROM folders ORDER BY name COLLATE NOCASE ASC');
+    const folders = foldersStmt.all() as unknown as DbFolder[];
+
+    const statsStmt = db.prepare(`
+      SELECT folder_path, COUNT(*) as count, COALESCE(SUM(size), 0) as total_size 
+      FROM files 
+      WHERE folder_path IS NOT NULL AND folder_path != '' 
+      GROUP BY folder_path
+    `);
+    const fileStats = statsStmt.all() as unknown as { folder_path: string; count: number; total_size: number }[];
+    const statsMap = new Map<string, { count: number; total_size: number }>();
+    for (const stat of fileStats) {
+      statsMap.set(stat.folder_path, { count: stat.count, total_size: stat.total_size });
+    }
+
+    return folders.map((f) => {
+      // Calculate files directly inside or recursively inside
+      let fileCount = 0;
+      let totalSize = 0;
+      for (const [fPath, stat] of statsMap.entries()) {
+        if (fPath === f.path || fPath.startsWith(f.path + '/')) {
+          fileCount += stat.count;
+          totalSize += stat.total_size;
+        }
+      }
+      return {
+        ...f,
+        file_count: fileCount,
+        total_size: totalSize,
+      };
+    });
+  },
+
+  getFolderByPath(folderPath: string): DbFolder | null {
+    const db = getDb();
+    const cleanPath = folderPath.replace(/^\/+|\/+$/g, '').trim();
+    const stmt = db.prepare('SELECT * FROM folders WHERE path = ?');
+    const result = stmt.get(cleanPath) as unknown as DbFolder | undefined;
+    return result || null;
+  },
+
+  getFolderById(id: string): DbFolder | null {
+    const db = getDb();
+    const stmt = db.prepare('SELECT * FROM folders WHERE id = ?');
+    const result = stmt.get(id) as unknown as DbFolder | undefined;
+    return result || null;
+  },
+
+  renameFolder(id: string, newName: string): DbFolder | null {
+    const db = getDb();
+    const current = this.getFolderById(id);
+    if (!current) return null;
+
+    const trimmedNewName = newName.trim().replace(/[\/\\]/g, '-');
+    if (!trimmedNewName) throw new Error('Folder name cannot be empty');
+
+    const oldPath = current.path;
+    const newPath = current.parent_path ? `${current.parent_path}/${trimmedNewName}` : trimmedNewName;
+    const now = Date.now();
+
+    // 1. Update this folder
+    const updateStmt = db.prepare('UPDATE folders SET name = ?, path = ?, updated_at = ? WHERE id = ?');
+    updateStmt.run(trimmedNewName, newPath, now, id);
+
+    // 2. Update subfolder paths
+    const childFolders = db.prepare('SELECT * FROM folders WHERE path LIKE ?').all(`${oldPath}/%`) as unknown as DbFolder[];
+    for (const child of childFolders) {
+      const childNewPath = newPath + child.path.substring(oldPath.length);
+      const childNewParent = newPath + child.parent_path.substring(oldPath.length);
+      db.prepare('UPDATE folders SET path = ?, parent_path = ?, updated_at = ? WHERE id = ?').run(
+        childNewPath,
+        childNewParent,
+        now,
+        child.id
+      );
+    }
+
+    // 3. Update files folder_path
+    db.prepare('UPDATE files SET folder_path = ? WHERE folder_path = ?').run(newPath, oldPath);
+    const nestedFiles = db.prepare('SELECT id, folder_path FROM files WHERE folder_path LIKE ?').all(`${oldPath}/%`) as unknown as { id: string; folder_path: string }[];
+    for (const nf of nestedFiles) {
+      const updatedPath = newPath + nf.folder_path.substring(oldPath.length);
+      db.prepare('UPDATE files SET folder_path = ? WHERE id = ?').run(updatedPath, nf.id);
+    }
+
+    return {
+      ...current,
+      name: trimmedNewName,
+      path: newPath,
+      updated_at: now,
+    };
+  },
+
+  deleteFolder(id: string, deleteFiles: boolean): { success: boolean; deletedFilePaths: string[] } {
+    const db = getDb();
+    const current = this.getFolderById(id);
+    if (!current) return { success: false, deletedFilePaths: [] };
+
+    const folderPath = current.path;
+    const deletedFilePaths: string[] = [];
+
+    // Find all files in this folder and subfolders
+    const affectedFiles = db.prepare(`
+      SELECT id, file_path, storage_backend 
+      FROM files 
+      WHERE folder_path = ? OR folder_path LIKE ?
+    `).all(folderPath, `${folderPath}/%`) as unknown as { id: string; file_path: string; storage_backend?: string }[];
+
+    if (deleteFiles) {
+      for (const f of affectedFiles) {
+        deletedFilePaths.push(f.file_path);
+        db.prepare('DELETE FROM files WHERE id = ?').run(f.id);
+      }
+    } else {
+      // Move files to parent or root
+      const targetPath = current.parent_path || null;
+      db.prepare(`
+        UPDATE files 
+        SET folder_path = ? 
+        WHERE folder_path = ?
+      `).run(targetPath, folderPath);
+
+      for (const f of affectedFiles) {
+        if (f.file_path.startsWith(`${folderPath}/`)) {
+          // Keep relative subfolder under parent
+          const remainder = f.file_path.substring(folderPath.length + 1);
+          const newFPath = current.parent_path ? `${current.parent_path}/${remainder}` : remainder;
+          db.prepare('UPDATE files SET folder_path = ? WHERE id = ?').run(newFPath, f.id);
+        }
+      }
+    }
+
+    // Delete folder and all subfolders from folders table
+    db.prepare('DELETE FROM folders WHERE path = ? OR path LIKE ?').run(folderPath, `${folderPath}/%`);
+
+    return { success: true, deletedFilePaths };
   },
 };

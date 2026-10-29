@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { api } from './services/api.ts';
 import {
   StoredFile,
+  FolderItem,
   StorageStats,
   FileCategory,
   SortOption,
@@ -18,6 +19,9 @@ import { DeploymentGuideModal } from './components/DeploymentGuideModal.tsx';
 import { SettingsModal } from './components/SettingsModal.tsx';
 import { ConfirmDeleteModal } from './components/ConfirmDeleteModal.tsx';
 import { RenameModal } from './components/RenameModal.tsx';
+import { CreateFolderModal } from './components/CreateFolderModal.tsx';
+import { RenameFolderModal } from './components/RenameFolderModal.tsx';
+import { ConfirmDeleteFolderModal } from './components/ConfirmDeleteFolderModal.tsx';
 import { LoginView } from './components/LoginView.tsx';
 
 export default function App() {
@@ -31,6 +35,8 @@ export default function App() {
 
   // Data states
   const [files, setFiles] = useState<StoredFile[]>([]);
+  const [folders, setFolders] = useState<FolderItem[]>([]);
+  const [currentFolder, setCurrentFolder] = useState<string>('');
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
@@ -51,9 +57,16 @@ export default function App() {
 
   // Modals state
   const [isUploadOpen, setIsUploadOpen] = useState<boolean>(false);
+  const [uploadTargetFolder, setUploadTargetFolder] = useState<string>('');
   const [isTesterOpen, setIsTesterOpen] = useState<boolean>(false);
   const [isGuideOpen, setIsGuideOpen] = useState<boolean>(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+
+  // Folder modals state
+  const [isCreateFolderOpen, setIsCreateFolderOpen] = useState<boolean>(false);
+  const [folderToRename, setFolderToRename] = useState<FolderItem | null>(null);
+  const [folderToDelete, setFolderToDelete] = useState<FolderItem | null>(null);
+  const [isDeletingFolder, setIsDeletingFolder] = useState<boolean>(false);
 
   // Selected file for inspection / actions
   const [inspectedFile, setInspectedFile] = useState<StoredFile | null>(null);
@@ -90,6 +103,16 @@ export default function App() {
     }
   }, [isAuthenticated, debouncedSearch, category, sort]);
 
+  const fetchFolders = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const folderList = await api.getFolders();
+      setFolders(folderList);
+    } catch (err) {
+      console.error('Failed to load folders:', err);
+    }
+  }, [isAuthenticated]);
+
   const fetchStats = useCallback(async () => {
     if (!isAuthenticated) return;
     try {
@@ -100,12 +123,13 @@ export default function App() {
     }
   }, [isAuthenticated]);
 
-  // Fetch files when debouncedSearch, category, or sort changes
+  // Fetch files and folders when debouncedSearch, category, or sort changes
   useEffect(() => {
     if (isAuthenticated) {
       fetchFiles();
+      fetchFolders();
     }
-  }, [isAuthenticated, fetchFiles]);
+  }, [isAuthenticated, fetchFiles, fetchFolders]);
 
   // Fetch stats on auth state change (login/mount)
   useEffect(() => {
@@ -116,6 +140,7 @@ export default function App() {
 
   const handleRefresh = () => {
     fetchFiles();
+    fetchFolders();
     fetchStats();
     showToast('Storage & files refreshed');
   };
@@ -129,15 +154,59 @@ export default function App() {
     api.logout();
     setIsAuthenticated(false);
     setFiles([]);
+    setFolders([]);
     setStats(null);
   };
 
   const handleUploadSuccess = (uploadedFile: StoredFile) => {
     showToast(`Uploaded ${uploadedFile.original_name}`);
     fetchFiles();
+    fetchFolders();
     fetchStats();
   };
 
+  const handleOpenUpload = (targetFolder?: string) => {
+    setUploadTargetFolder(targetFolder !== undefined ? targetFolder : currentFolder);
+    setIsUploadOpen(true);
+  };
+
+  // Folder Actions
+  const handleCreateFolder = async (folderName: string) => {
+    const res = await api.createFolder(folderName, currentFolder);
+    showToast(`Created folder "${res.folder.name}"`);
+    fetchFolders();
+  };
+
+  const handleRenameFolder = async (folder: FolderItem, newName: string) => {
+    const res = await api.renameFolder(folder.id, newName);
+    showToast(`Renamed folder to "${res.folder.name}"`);
+    if (currentFolder === folder.path) {
+      setCurrentFolder(res.folder.path);
+    }
+    fetchFolders();
+    fetchFiles();
+  };
+
+  const handleDeleteFolderConfirm = async (folder: FolderItem, deleteFiles: boolean) => {
+    setIsDeletingFolder(true);
+    try {
+      await api.deleteFolder(folder.id, deleteFiles);
+      showToast(`Deleted folder "${folder.name}"`);
+      setFolderToDelete(null);
+      if (currentFolder === folder.path || currentFolder.startsWith(folder.path + '/')) {
+        setCurrentFolder(folder.parent_path || '');
+      }
+      fetchFolders();
+      fetchFiles();
+      fetchStats();
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Failed to delete folder');
+    } finally {
+      setIsDeletingFolder(false);
+    }
+  };
+
+  // File Actions
   const handleDeleteConfirm = async (file: StoredFile) => {
     setIsDeleting(true);
     try {
@@ -148,6 +217,7 @@ export default function App() {
         setInspectedFile(null);
       }
       fetchFiles();
+      fetchFolders();
       fetchStats();
     } catch (err: unknown) {
       showToast(err instanceof Error ? err.message : 'Failed to delete file');
@@ -198,7 +268,7 @@ export default function App() {
           setActiveView('files');
         }}
         stats={stats}
-        onOpenUpload={() => setIsUploadOpen(true)}
+        onOpenUpload={() => handleOpenUpload()}
         onOpenTester={() => setIsTesterOpen(true)}
         onOpenGuide={() => setIsGuideOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
@@ -219,7 +289,7 @@ export default function App() {
             setSearch(val);
             if (activeView !== 'files') setActiveView('files');
           }}
-          onOpenUpload={() => setIsUploadOpen(true)}
+          onOpenUpload={() => handleOpenUpload()}
           onRefresh={handleRefresh}
           onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
           loading={loading}
@@ -235,7 +305,7 @@ export default function App() {
                   setCategory(cat);
                   setActiveView('files');
                 }}
-                onOpenUpload={() => setIsUploadOpen(true)}
+                onOpenUpload={() => handleOpenUpload()}
                 onViewFiles={() => setActiveView('files')}
               />
 
@@ -252,6 +322,9 @@ export default function App() {
                 </div>
                 <FileList
                   files={files.slice(0, 8)}
+                  folders={folders}
+                  currentFolder={currentFolder}
+                  onCurrentFolderChange={setCurrentFolder}
                   search={search}
                   onSearchChange={setSearch}
                   category={category}
@@ -263,7 +336,16 @@ export default function App() {
                   onSelectFile={(f) => setInspectedFile(f)}
                   onDeleteFile={(f) => setFileToDelete(f)}
                   onRenameFile={(f) => setFileToRename(f)}
-                  onOpenUpload={() => setIsUploadOpen(true)}
+                  onOpenUpload={(target) => handleOpenUpload(target)}
+                  onOpenCreateFolder={() => setIsCreateFolderOpen(true)}
+                  onRenameFolder={(f) => setFolderToRename(f)}
+                  onDeleteFolder={(f) => setFolderToDelete(f)}
+                  onDropFilesToFolder={(f, dropped) => {
+                    handleOpenUpload(f.path);
+                  }}
+                  onDropFilesToCurrent={(dropped) => {
+                    handleOpenUpload(currentFolder);
+                  }}
                   loading={loading}
                 />
               </div>
@@ -277,9 +359,12 @@ export default function App() {
                 onSelectCategory={(cat) => setCategory(cat)}
               />
 
-              {/* Full File Browser */}
+              {/* Full File & Folder Explorer Browser */}
               <FileList
                 files={files}
+                folders={folders}
+                currentFolder={currentFolder}
+                onCurrentFolderChange={setCurrentFolder}
                 search={search}
                 onSearchChange={setSearch}
                 category={category}
@@ -291,7 +376,16 @@ export default function App() {
                 onSelectFile={(f) => setInspectedFile(f)}
                 onDeleteFile={(f) => setFileToDelete(f)}
                 onRenameFile={(f) => setFileToRename(f)}
-                onOpenUpload={() => setIsUploadOpen(true)}
+                onOpenUpload={(target) => handleOpenUpload(target)}
+                onOpenCreateFolder={() => setIsCreateFolderOpen(true)}
+                onRenameFolder={(f) => setFolderToRename(f)}
+                onDeleteFolder={(f) => setFolderToDelete(f)}
+                onDropFilesToFolder={(f, dropped) => {
+                  handleOpenUpload(f.path);
+                }}
+                onDropFilesToCurrent={(dropped) => {
+                  handleOpenUpload(currentFolder);
+                }}
                 loading={loading}
               />
             </div>
@@ -312,6 +406,30 @@ export default function App() {
         isOpen={isUploadOpen}
         onClose={() => setIsUploadOpen(false)}
         onUploadSuccess={handleUploadSuccess}
+        targetFolder={uploadTargetFolder}
+        availableFolders={folders}
+      />
+
+      <CreateFolderModal
+        isOpen={isCreateFolderOpen}
+        onClose={() => setIsCreateFolderOpen(false)}
+        currentPath={currentFolder}
+        onCreate={handleCreateFolder}
+      />
+
+      <RenameFolderModal
+        folder={folderToRename}
+        isOpen={!!folderToRename}
+        onClose={() => setFolderToRename(null)}
+        onRename={handleRenameFolder}
+      />
+
+      <ConfirmDeleteFolderModal
+        folder={folderToDelete}
+        isOpen={!!folderToDelete}
+        onClose={() => setFolderToDelete(null)}
+        onConfirm={handleDeleteFolderConfirm}
+        deleting={isDeletingFolder}
       />
 
       <FileDetailModal
@@ -339,6 +457,7 @@ export default function App() {
         onClose={() => setIsSettingsOpen(false)}
         onRefresh={() => {
           fetchFiles();
+          fetchFolders();
           fetchStats();
         }}
       />
